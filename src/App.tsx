@@ -218,10 +218,12 @@ export function App() {
     if (!muted) void audio.current.play().then(() => setSpeaking(true)).catch(() => { setSpeaking(false); notify('Tap Replay voice to hear your coach.'); });
   }
   async function ensureLiveSession(voice = false) {
-    if (preview || liveReady.current) return;
-    const result = await api<{ token: string; model: string }>('live-token', { coach: sessionCoach, mode, voice });
+    if (preview || liveReady.current) return false;
+    const result = await api<{ token: string; model: string; used: number; limit: number }>('live-token', { coach: sessionCoach, mode, scenario, voice });
+    setAccess(current => ({ ...current, used: result.used, limit: result.limit }));
     await live.current?.connect(result.token, result.model, liveCoachInstruction(sessionCoach, mode, scenario));
     liveReady.current = true;
+    return true;
   }
   async function reserveLiveTurn(voice = false) {
     const result = await api<{ used: number; limit: number }>('live-turn', { coach: sessionCoach, mode, scenario, voice });
@@ -233,7 +235,7 @@ export function App() {
     liveReply.current = { userId, assistantId: '', input: text.trim(), output: '' };
     setMessages(items => [...items, { id: userId, role: 'user', content: text.trim() }]);
     setSaved(false); setLiveBusy(true); stopAudio();
-    try { await reserveLiveTurn(false); await ensureLiveSession(false); live.current?.sendText(text.trim()); }
+    try { const firstTurn = await ensureLiveSession(false); if (!firstTurn) await reserveLiveTurn(false); live.current?.sendText(text.trim()); }
     catch (error) { live.current?.close(); setLiveBusy(false); notify(error instanceof Error ? error.message : 'The live coach could not start. Please try again.'); }
   }
   async function send(text?: string, captured?: Recording) {
@@ -279,8 +281,8 @@ export function App() {
     if (!preview) {
       setLiveBusy(true);
       try {
-        await reserveLiveTurn(true);
-        await ensureLiveSession(true);
+        const firstTurn = await ensureLiveSession(true);
+        if (!firstTurn) await reserveLiveTurn(true);
         await live.current?.startMicrophone();
         if (liveRecordingTimer.current) clearTimeout(liveRecordingTimer.current);
         liveRecordingTimer.current = setTimeout(() => live.current?.stopMicrophone(), 45_000);

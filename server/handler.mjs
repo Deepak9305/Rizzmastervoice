@@ -90,7 +90,10 @@ export function createHandler(overrides = {}) {
           assert(body.mode !== 'practice' || scenarios[body.scenario], 400, 'Choose a practice scenario.');
           const access = await services.entitlement(db, config, user.id);
           assert(access.active || (coach === 'wingman' && body.mode === 'advice'), 402, 'This coach or practice scenario is included with Voice Plus.');
-          result = json({ token: await services.createGeminiLiveToken(config, coachInstructions(coach, body.mode, scenarios[body.scenario])), model: config.geminiLiveModel });
+          const { data: quota, error: quotaError } = await db.rpc('voice_reserve_turn', { p_user: user.id });
+          if (quotaError) throw quotaError;
+          assert(quota?.allowed, 429, 'You’ve used your coaching turns for today. Your allowance resets at midnight UTC.');
+          result = json({ token: await services.createGeminiLiveToken(config, coachInstructions(coach, body.mode, scenarios[body.scenario])), model: config.geminiLiveModel, used: quota.used, limit: quota.limit });
         } else if (path === 'live-turn' && request.method === 'POST') {
           assert(profile.age_confirmed && profile.terms_version === TERMS_VERSION, 403, 'Confirm that you are 18 or older and accept the terms to start coaching.');
           const body = await bodyJson(request);
