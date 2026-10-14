@@ -71,7 +71,9 @@ export class GeminiLiveSession {
   async connect(token: string, model: string, systemInstruction: string) {
     this.close();
     this.state('connecting');
-    const url = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?access_token=${encodeURIComponent(token)}`;
+    // Ephemeral tokens are accepted by the constrained Live API endpoint.
+    // Using the unconstrained endpoint makes the socket close before setup.
+    const url = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContentConstrained?access_token=${encodeURIComponent(token)}`;
     await new Promise<void>((resolve, reject) => {
       const socket = new WebSocket(url);
       this.socket = socket;
@@ -81,19 +83,28 @@ export class GeminiLiveSession {
         this.callbacks.onError?.(error);
       };
       socket.onopen = () => {
+        const modelName = model.replace(/^models\//, '');
         socket.send(JSON.stringify({ setup: {
-          model: `models/${model}`,
-          generationConfig: { responseModalities: ['AUDIO'] },
+          model: `models/${modelName}`,
+          generationConfig: {
+            responseModalities: ['AUDIO'],
+            speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } },
+          },
           systemInstruction: { parts: [{ text: systemInstruction }] },
           inputAudioTranscription: {},
           outputAudioTranscription: {},
-          speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } },
           sessionResumption: {},
         } }));
       };
       socket.onmessage = event => {
         let message: any;
         try { message = JSON.parse(typeof event.data === 'string' ? event.data : ''); } catch { return; }
+        if (message.error) {
+          const detail = typeof message.error.message === 'string' ? ` ${message.error.message}` : '';
+          fail(new Error(`The live coach could not start.${detail}`));
+          socket.close();
+          return;
+        }
         if (message.setupComplete) {
           if (!settled) { settled = true; resolve(); }
           this.state('connected');

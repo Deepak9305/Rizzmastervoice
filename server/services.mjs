@@ -2,11 +2,12 @@ import { createClient } from '@supabase/supabase-js';
 import { GoogleAuth, OAuth2Client } from 'google-auth-library';
 import { HttpError, accountHash, subscriptionAccess } from './policy.mjs';
 export function configuration(env = process.env) {
+  const liveModel = String(env.GEMINI_LIVE_MODEL || 'gemini-3.8-live').trim().replace(/^models\//, '');
   return {
     supabaseUrl: env.SUPABASE_URL, supabaseKey: env.SUPABASE_SECRET_KEY,
     openaiKey: env.OPENAI_API_KEY,
     geminiKey: env.GEMINI_API_KEY,
-    geminiLiveModel: env.GEMINI_LIVE_MODEL || 'gemini-3.8-live',
+    geminiLiveModel: liveModel || 'gemini-3.8-live',
     coachModel: env.OPENAI_COACH_MODEL || 'gpt-4o-mini',
     transcribeModel: env.OPENAI_TRANSCRIBE_MODEL || 'gpt-4o-mini-transcribe',
     speechModel: env.OPENAI_SPEECH_MODEL || 'gpt-4o-mini-tts',
@@ -52,6 +53,9 @@ export async function createGeminiLiveToken(config, systemInstruction) {
         config: {
           responseModalities: ['AUDIO'],
           sessionResumption: {},
+          inputAudioTranscription: {},
+          outputAudioTranscription: {},
+          speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } },
           ...(systemInstruction ? { systemInstruction: { parts: [{ text: systemInstruction }] } } : {}),
         },
       },
