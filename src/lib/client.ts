@@ -6,6 +6,28 @@ const key = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY?.trim();
 export const supabase = url && key ? createClient(url, key, { auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true } }) : null;
 export const configured = Boolean(supabase);
 export const defaultProfile: Profile = { display_name: '', coach: 'wingman', save_transcripts: false, spoken_replies: true, age_confirmed: false, terms_version: null, voice_consent: false };
+const previewProfileKey = 'rv.preview.profile.v1';
+export function readPreviewProfile(): Profile {
+  try {
+    const value = JSON.parse(localStorage.getItem(previewProfileKey) || 'null');
+    if (!value || typeof value !== 'object') return { ...defaultProfile };
+    return {
+      display_name: typeof value.display_name === 'string' ? value.display_name.slice(0, 60) : defaultProfile.display_name,
+      coach: ['wingman', 'bestie', 'straight'].includes(value.coach) ? value.coach : defaultProfile.coach,
+      save_transcripts: value.save_transcripts === true,
+      spoken_replies: value.spoken_replies !== false,
+      age_confirmed: value.age_confirmed === true,
+      terms_version: typeof value.terms_version === 'string' ? value.terms_version : null,
+      voice_consent: value.voice_consent === true,
+    };
+  } catch { return { ...defaultProfile }; }
+}
+export function writePreviewProfile(profile: Profile) {
+  try { localStorage.setItem(previewProfileKey, JSON.stringify(profile)); } catch { /* Storage may be unavailable in private browsing. */ }
+}
+export function clearPreviewProfile() {
+  try { localStorage.removeItem(previewProfileKey); } catch { /* Storage may be unavailable in private browsing. */ }
+}
 export class ApiError extends Error {
   constructor(message: string, public status: number) { super(message); }
 }

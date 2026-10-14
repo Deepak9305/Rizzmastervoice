@@ -8,7 +8,7 @@ import { ConsentScreen, ChooseCoachScreen, ConversationScreen, HomeScreen, Pract
 import { PremiumScreen, PrivacyAccountScreen, ProfileScreen, ReportScreen, SessionsScreen, SubscriptionScreen } from './components/AccountScreens';
 import { DeleteAccountScreen, HelpScreen, LegalScreen } from './components/LegalScreens';
 import { Brand, Button, Empty, Header } from './components/UI';
-import { api, ApiError, configured, defaultProfile, downloadJson, supabase } from './lib/client';
+import { api, ApiError, clearPreviewProfile, configured, defaultProfile, downloadJson, readPreviewProfile, supabase, writePreviewProfile } from './lib/client';
 import { clearBillingAccount, initializeBilling, restorePurchases, setBillingCallbacks, subscribe } from './lib/billing';
 import { previewReply } from './lib/preview';
 import { VoiceRecorder, type Recording } from './lib/recorder';
@@ -20,7 +20,9 @@ const MAIN_SCREENS = ['home', 'practice', 'sessions', 'profile'];
 const ALL_SCREENS = [...AUTH_SCREENS, ...MAIN_SCREENS, 'choose-coach', 'conversation', 'consent', 'recap', 'premium', 'subscription', 'account', 'privacy', 'terms', 'help', 'delete-account', 'report', 'voice-settings'];
 function screenFromUrl() {
   const path = location.pathname.replace(/^\/+|\/+$/g, '');
-  return ALL_SCREENS.includes(path) ? path : 'welcome';
+  const previewComplete = !configured && readPreviewProfile().age_confirmed;
+  if (ALL_SCREENS.includes(path)) return previewComplete && ['welcome', 'age'].includes(path) ? 'home' : path;
+  return previewComplete ? 'home' : 'welcome';
 }
 function readPreviewSessions(): SavedSession[] {
   try { const value = JSON.parse(localStorage.getItem('rv.preview.sessions.v1') || '[]'); return Array.isArray(value) ? value.filter(item => typeof item.id === 'string' && typeof item.title === 'string' && Array.isArray(item.messages)) : []; }
@@ -31,7 +33,7 @@ export function App() {
   const [user, setUser] = useState<User | null>(null);
   const userRef = useRef(user); userRef.current = user;
   const [preview, setPreview] = useState(!configured);
-  const [profile, setProfile] = useState<Profile>({ ...defaultProfile });
+  const [profile, setProfile] = useState<Profile>(() => configured ? { ...defaultProfile } : readPreviewProfile());
   const [access, setAccess] = useState<Entitlement>(INITIAL_ACCESS);
   const [loadingProfile, setLoadingProfile] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -175,18 +177,30 @@ export function App() {
     return () => { cancelled = true; };
   }, [user?.id, loadProfile, notify]);
   async function patchProfile(update: Partial<Profile> & { accept_terms?: boolean }) {
-    if (preview) { setProfile(current => ({ ...current, ...update })); return; }
+    if (preview) {
+      setProfile(current => {
+        const { accept_terms: _acceptTerms, ...profileUpdate } = update;
+        const next = { ...current, ...profileUpdate };
+        writePreviewProfile(next);
+        return next;
+      });
+      return;
+    }
     const result = await api<{ profile: Profile }>('profile', update, 'PATCH'); setProfile(result.profile);
   }
   function patch(update: Partial<Profile>) { void task(async () => { await patchProfile(update); notify('Your settings are saved.'); }); }
   async function acceptOnboarding() {
     await task(async () => {
-      if (preview) { setProfile(current => ({ ...current, age_confirmed: true, terms_version: '2026-10-10', display_name: current.display_name || 'Alex' })); navigate('choose-coach'); }
+      if (preview) { await patchProfile({ age_confirmed: true, terms_version: '2026-10-10', display_name: profileRef.current.display_name || 'Alex' }); navigate('choose-coach'); }
       else if (!user) navigate('login');
       else { await patchProfile({ age_confirmed: true, accept_terms: true }); navigate('choose-coach'); }
     });
   }
-  function enterPreview() { setPreview(true); setProfile({ ...defaultProfile, display_name: 'Alex' }); setAccess(INITIAL_ACCESS); navigate('age'); }
+  function enterPreview() {
+    const savedProfile = readPreviewProfile();
+    const next = savedProfile.display_name ? savedProfile : { ...savedProfile, display_name: 'Alex' };
+    setPreview(true); setProfile(next); writePreviewProfile(next); setAccess(INITIAL_ACCESS); navigate(next.age_confirmed ? 'home' : 'age');
+  }
   function startConversation(nextTitle: string, nextMode: Mode = 'advice', nextScenario?: string, voice = false) {
     if (!preview && !user) { navigate('login'); return; }
     if (!profile.age_confirmed) { navigate('age'); return; }
@@ -312,8 +326,8 @@ function openSession(item: SavedSession) { clearSpeech(); setSpeechMessageId(nul
   function report(reason: string, note: string) { void task(async () => { if (preview) { notify('Preview: report form tested. No report was sent.'); navigate('conversation'); return; } await api('reports', { reason, note, message_id: reportMessage?.id, content: reportMessage?.content }); notify('Your report was sent for review. Thank you.'); navigate('conversation'); }); }
   function restore() { void task(async () => { if (preview || !user) { notify('Sign in to your account in the Android app to restore purchases.'); return; } await restorePurchases(user.id); notify('Your purchases were checked with Google Play.'); }); }
   function buy(plan: Plan) { void task(async () => { if (!user || preview) { navigate('login'); return; } await subscribe(plan, user.id); }); }
-  function signOut() { void task(async () => { sessionGeneration.current++; clearSpeech(); recorder.current.cancel(); live.current?.close(); setLiveBusy(false); if (!preview && supabase) { const result = await supabase.auth.signOut(); if (result.error) throw result.error; } setUser(null); setPreview(!configured); setProfile({ ...defaultProfile }); setMessages([]); setSessions([]); setAccess(INITIAL_ACCESS); navigate('welcome'); }); }
-  async function deleteAccount(password: string) { await task(async () => { clearSpeech(); live.current?.close(); setLiveBusy(false); if (preview) localStorage.removeItem('rv.preview.sessions.v1'); else { await api('account', { confirmation: 'DELETE', password }, 'DELETE'); await supabase?.auth.signOut({ scope: 'local' }); } sessionGeneration.current++; setUser(null); setProfile({ ...defaultProfile }); setSessions([]); setMessages([]); setAccess(INITIAL_ACCESS); setPreview(!configured); deletionReturn.current = false; navigate('welcome'); notify(preview ? 'Preview data cleared.' : 'Your account and app data have been deleted.'); }); }
+  function signOut() { void task(async () => { sessionGeneration.current++; clearSpeech(); recorder.current.cancel(); live.current?.close(); setLiveBusy(false); if (preview) clearPreviewProfile(); else if (supabase) { const result = await supabase.auth.signOut(); if (result.error) throw result.error; } setUser(null); setPreview(!configured); setProfile({ ...defaultProfile }); setMessages([]); setSessions([]); setAccess(INITIAL_ACCESS); navigate('welcome'); }); }
+  async function deleteAccount(password: string) { await task(async () => { clearSpeech(); live.current?.close(); setLiveBusy(false); if (preview) { localStorage.removeItem('rv.preview.sessions.v1'); clearPreviewProfile(); } else { await api('account', { confirmation: 'DELETE', password }, 'DELETE'); await supabase?.auth.signOut({ scope: 'local' }); } sessionGeneration.current++; setUser(null); setProfile({ ...defaultProfile }); setSessions([]); setMessages([]); setAccess(INITIAL_ACCESS); setPreview(!configured); deletionReturn.current = false; navigate('welcome'); notify(preview ? 'Preview data cleared.' : 'Your account and app data have been deleted.'); }); }
   const main = MAIN_SCREENS.includes(screen);
   const appAccess = user || preview;
   let content;
