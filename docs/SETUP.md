@@ -42,6 +42,8 @@ Fill server-only variables:
 | `GOOGLE_RTDN_AUDIENCE` | Full HTTPS `/api/billing/notifications` push endpoint |
 | `GOOGLE_RTDN_SERVICE_ACCOUNT_EMAIL` | Authenticated Pub/Sub push identity |
 
+For a temporary private voice test, `GEMINI_API_KEY` alone enables Gemini-only test mode when both Supabase server variables are absent. This mode intentionally skips account authentication, quotas, saved sessions and premium checks; it is not suitable for a public deployment. Add `GEMINI_ONLY_MODE=false` when configuring Supabase for production behavior.
+
 For local API testing leave `VITE_API_BASE_URL` blank: Vite proxies `/api` to the included Node server on port 3001. For Android, a complete public HTTPS base URL is required. Do not put the secret key or provider credentials into the Android assets.
 
 ## 3. Vercel

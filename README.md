@@ -11,7 +11,7 @@ npm ci
 npm run dev
 ```
 
-Open http://127.0.0.1:5173. Without environment keys the app shows a clearly labeled preview with sample replies. You can explore onboarding, coaching, roleplay, recap, saved sample sessions, premium, settings, privacy and reporting. Preview authentication and payments are never simulated. Voice recordings in preview are discarded without contacting a provider.
+Open http://127.0.0.1:5173. Without environment keys the app shows a clearly labeled preview with sample replies. With only `GEMINI_API_KEY`, it enables a clearly labeled Gemini-only voice test mode: onboarding is local, auth/quotas/premium are disabled, and the browser receives a short-lived Live token from the server. Keep that mode private while testing; configure Supabase before sharing the app or shipping it.
 
 ## Included
 

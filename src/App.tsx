@@ -35,6 +35,7 @@ export function App() {
   const [preview, setPreview] = useState(!configured);
   const [profile, setProfile] = useState<Profile>(() => configured ? { ...defaultProfile } : readPreviewProfile());
   const [access, setAccess] = useState<Entitlement>(INITIAL_ACCESS);
+  const [liveAvailable, setLiveAvailable] = useState(!configured);
   const [loadingProfile, setLoadingProfile] = useState(false);
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState('');
@@ -146,6 +147,13 @@ export function App() {
     return () => { void back.then(handle => handle.remove()); void state.then(handle => handle.remove()); };
   }, [stopAudio]);
   useEffect(() => {
+    let cancelled = false;
+    void api<{ live_available?: boolean }>('health').then(result => {
+      if (!cancelled) setLiveAvailable(result.live_available === true);
+    }).catch(() => { /* The preview still shows its local sample mode if the API is offline. */ });
+    return () => { cancelled = true; };
+  }, []);
+  useEffect(() => {
     if (!supabase) return;
     void supabase.auth.getSession().then(({ data }) => setUser(data.session?.user || null));
     const { data: listener } = supabase.auth.onAuthStateChange((event, session) => {
@@ -232,7 +240,7 @@ export function App() {
     if (!muted) void audio.current.play().then(() => setSpeaking(true)).catch(() => { setSpeaking(false); notify('Tap Replay voice to hear your coach.'); });
   }
   async function ensureLiveSession(voice = false) {
-    if (preview || liveReady.current) return false;
+    if (!liveAvailable || liveReady.current) return false;
     const result = await api<{ token: string; model: string; used: number; limit: number }>('live-token', { coach: sessionCoach, mode, scenario, voice });
     setAccess(current => ({ ...current, used: result.used, limit: result.limit }));
     await live.current?.connect(result.token, result.model, liveCoachInstruction(sessionCoach, mode, scenario));
@@ -244,7 +252,7 @@ export function App() {
     setAccess(current => ({ ...current, used: result.used, limit: result.limit }));
   }
   async function sendLiveText(text: string) {
-    if (liveBusy || !text.trim()) return;
+    if (!liveAvailable || liveBusy || !text.trim()) return;
     const userId = crypto.randomUUID();
     liveReply.current = { userId, assistantId: '', input: text.trim(), output: '' };
     setMessages(items => [...items, { id: userId, role: 'user', content: text.trim() }]);
@@ -255,7 +263,7 @@ export function App() {
   async function send(text?: string, captured?: Recording) {
     if (inFlight.current || (!text && !captured)) return;
     if (messages.length >= 98) { notify('Save this session and start a new conversation to keep coaching.'); return; }
-    if (!preview) {
+    if (liveAvailable) {
       if (captured) { notify('Live coaching uses the microphone directly. Tap the mic to speak again.'); return; }
       if (text) { await sendLiveText(text); return; }
     }
@@ -292,7 +300,7 @@ export function App() {
     if (busy || liveBusy) return;
     if (!profileRef.current.voice_consent) { navigate('consent'); return; }
     stopAudio();
-    if (!preview) {
+    if (liveAvailable) {
       setLiveBusy(true);
       try {
         const firstTurn = await ensureLiveSession(true);
@@ -343,7 +351,7 @@ function openSession(item: SavedSession) { clearSpeech(); setSpeechMessageId(nul
   else if (screen === 'choose-coach') content = <ChooseCoachScreen coach={profile.coach} active={access.active || preview} back={() => navigate('home')} onChoose={coach => { if (coach !== 'wingman' && !access.active && !preview) navigate('premium'); else void task(async () => { await patchProfile({ coach }); }); }} onDone={() => navigate(previousScreen.current === 'profile' ? 'profile' : 'home')} />;
   else if (screen === 'practice') content = <PracticeScreen active={access.active || preview} start={startConversation} navigate={navigate} />;
   else if (screen === 'consent' || screen === 'voice-settings') content = <ConsentScreen busy={busy} back={() => navigate(screen === 'voice-settings' ? 'account' : 'home')} onAllow={() => void task(async () => { await patchProfile({ voice_consent: true }); if (screen === 'voice-settings') navigate('account'); else { startVoiceWhenReady.current = true; navigate('conversation'); } })} onText={() => { setVoiceMode(false); navigate(screen === 'voice-settings' ? 'account' : 'conversation'); }} />;
-else if (screen === 'conversation') content = <ConversationScreen title={title} coach={sessionCoach} mode={mode} messages={messages} busy={busy || liveBusy} recording={recording} speaking={speaking} voiceMode={voiceMode} muted={muted} preview={preview} liveVoice={!preview} speechMessageId={speechMessageId} saved={profile.save_transcripts} onSend={text => void send(text)} onRecord={() => void beginRecording()} onStopRecording={() => preview ? recorder.current.stop() : live.current?.stopMicrophone()} onCancelRecording={() => { recorder.current.cancel(); live.current?.close(); setLiveBusy(false); setRecording(false); }} onToggleVoice={toggleVoice} onToggleMute={() => { setMuted(!muted); live.current?.setMuted(!muted); stopAudio(); }} onEnd={finishSession} onReport={message => { setReportMessage(message); navigate('report'); }} onReplay={() => { if (audio.current) { audio.current.currentTime = 0; void audio.current.play().then(() => setSpeaking(true)).catch(() => notify('Voice playback is unavailable.')); } else notify('Live replies play as they arrive. Open captions to read this reply.'); }} />;
+  else if (screen === 'conversation') content = <ConversationScreen title={title} coach={sessionCoach} mode={mode} messages={messages} busy={busy || liveBusy} recording={recording} speaking={speaking} voiceMode={voiceMode} muted={muted} preview={preview} liveVoice={liveAvailable} speechMessageId={speechMessageId} saved={profile.save_transcripts} onSend={text => void send(text)} onRecord={() => void beginRecording()} onStopRecording={() => liveAvailable ? live.current?.stopMicrophone() : recorder.current.stop()} onCancelRecording={() => { recorder.current.cancel(); live.current?.close(); setLiveBusy(false); setRecording(false); }} onToggleVoice={toggleVoice} onToggleMute={() => { setMuted(!muted); live.current?.setMuted(!muted); stopAudio(); }} onEnd={finishSession} onReport={message => { setReportMessage(message); navigate('report'); }} onReplay={() => { if (audio.current) { audio.current.currentTime = 0; void audio.current.play().then(() => setSpeaking(true)).catch(() => notify('Voice playback is unavailable.')); } else notify('Live replies play as they arrive. Open captions to read this reply.'); }} />;
   else if (screen === 'recap') content = <RecapScreen messages={messages} saved={saved} busy={busy} save={() => void task(() => saveSession())} back={() => navigate('conversation')} home={() => navigate('home')} />;
   else if (screen === 'sessions') content = <SessionsScreen sessions={sessions} busy={busy} load={loadSessions} open={openSession} remove={removeSession} start={() => startConversation('Let’s talk')} />;
   else if (screen === 'profile') content = <ProfileScreen profile={profile} access={access} preview={preview} email={user?.email} patch={patch} navigate={navigate} signOut={signOut} />;
@@ -352,5 +360,5 @@ else if (screen === 'conversation') content = <ConversationScreen title={title} 
   else if (screen === 'subscription') content = <SubscriptionScreen access={access} back={() => navigate('profile')} restore={restore} navigate={navigate} busy={busy} />;
   else if (screen === 'report') content = <ReportScreen message={reportMessage} busy={busy} back={() => navigate('conversation')} send={report} />;
   else content = <Empty icon={<Sparkles />} title="Let’s head back." description="Your coaching space is one tap away."><Button onClick={() => navigate('home')}>Go home</Button></Empty>;
-  return <div className={`app-shell ${main ? 'main-view' : ''} ${screen === 'conversation' ? 'chat-shell' : ''}`}><aside className="desktop-sidebar"><button className="brand-home" onClick={() => navigate(appAccess ? 'home' : 'welcome')}><Brand /></button><p className="sidebar-tagline">A little courage.<br />A better connection.</p>{appAccess ? <nav aria-label="Main navigation">{[{ id: 'home', name: 'Talk', icon: <Mic /> }, { id: 'practice', name: 'Practice', icon: <Target /> }, { id: 'sessions', name: 'Sessions', icon: <History /> }, { id: 'profile', name: 'You', icon: <UserRound /> }].map(item => <button key={item.id} className={screen === item.id ? 'active' : ''} onClick={() => navigate(item.id)}>{item.icon}{item.name}{screen === item.id ? <span /> : null}</button>)}</nav> : <div className="sidebar-intro"><Sparkles size={24} /><p>Find your words.<br />Keep your spark.</p></div>}<div className="sidebar-bottom"><button className="sidebar-plus" onClick={() => navigate(appAccess ? 'premium' : 'login')}><Crown size={20} /><span>Meet Voice Plus<small>More room to grow.</small></span><ArrowRight size={16} /></button><button className="sidebar-help" onClick={() => navigate('help')}>A little help <ArrowRight size={13} /></button><small>AI coaching for adults 18+</small></div></aside><main className={`app-main ${main ? 'has-tabs' : ''}`} id="main-content">{preview ? <div className="preview-strip"><Sparkles size={12} /><span>PREVIEW · Sample coaching · Payments disabled</span></div> : null}<div className={`screen-container screen-${screen}`}>{content}</div>{preview && screen === 'conversation' && !messages.some(m => m.role === 'user') ? <div className="sample-prompt"><button disabled={busy} onClick={() => void send(mode === 'practice' ? 'Hey, nice to meet you. What brings you here?' : 'I have a date tonight and I’m feeling nervous.')}><Sparkles size={14} /> Try a sample conversation <ArrowRight size={15} /></button></div> : null}{main && appAccess ? <nav className="bottom-tabs" aria-label="Main navigation">{[{ id: 'home', title: 'Talk', icon: <Mic size={21} /> }, { id: 'practice', title: 'Practice', icon: <Target size={21} /> }, { id: 'sessions', title: 'Sessions', icon: <History size={21} /> }, { id: 'profile', title: 'You', icon: <UserRound size={21} /> }].map(item => <button key={item.id} className={screen === item.id ? 'active' : ''} aria-current={screen === item.id ? 'page' : undefined} onClick={() => navigate(item.id)}>{item.icon}<span>{item.title}</span></button>)}</nav> : null}</main>{toast ? <div className="toast" role="status"><span>{toast}</span><button className="icon-button" aria-label="Dismiss notification" onClick={() => setToast('')}><X size={17} /></button></div> : null}</div>;
+  return <div className={`app-shell ${main ? 'main-view' : ''} ${screen === 'conversation' ? 'chat-shell' : ''}`}><aside className="desktop-sidebar"><button className="brand-home" onClick={() => navigate(appAccess ? 'home' : 'welcome')}><Brand /></button><p className="sidebar-tagline">A little courage.<br />A better connection.</p>{appAccess ? <nav aria-label="Main navigation">{[{ id: 'home', name: 'Talk', icon: <Mic /> }, { id: 'practice', name: 'Practice', icon: <Target /> }, { id: 'sessions', name: 'Sessions', icon: <History /> }, { id: 'profile', name: 'You', icon: <UserRound /> }].map(item => <button key={item.id} className={screen === item.id ? 'active' : ''} onClick={() => navigate(item.id)}>{item.icon}{item.name}{screen === item.id ? <span /> : null}</button>)}</nav> : <div className="sidebar-intro"><Sparkles size={24} /><p>Find your words.<br />Keep your spark.</p></div>}<div className="sidebar-bottom"><button className="sidebar-plus" onClick={() => navigate(appAccess ? 'premium' : 'login')}><Crown size={20} /><span>Meet Voice Plus<small>More room to grow.</small></span><ArrowRight size={16} /></button><button className="sidebar-help" onClick={() => navigate('help')}>A little help <ArrowRight size={13} /></button><small>AI coaching for adults 18+</small></div></aside><main className={`app-main ${main ? 'has-tabs' : ''}`} id="main-content">{preview ? <div className="preview-strip"><Sparkles size={12} /><span>{liveAvailable ? 'GEMINI VOICE TEST · Auth and payments disabled' : 'PREVIEW · Sample coaching · Payments disabled'}</span></div> : null}<div className={`screen-container screen-${screen}`}>{content}</div>{preview && !liveAvailable && screen === 'conversation' && !messages.some(m => m.role === 'user') ? <div className="sample-prompt"><button disabled={busy} onClick={() => void send(mode === 'practice' ? 'Hey, nice to meet you. What brings you here?' : 'I have a date tonight and I’m feeling nervous.')}><Sparkles size={14} /> Try a sample conversation <ArrowRight size={15} /></button></div> : null}{main && appAccess ? <nav className="bottom-tabs" aria-label="Main navigation">{[{ id: 'home', title: 'Talk', icon: <Mic size={21} /> }, { id: 'practice', title: 'Practice', icon: <Target size={21} /> }, { id: 'sessions', title: 'Sessions', icon: <History size={21} /> }, { id: 'profile', title: 'You', icon: <UserRound size={21} /> }].map(item => <button key={item.id} className={screen === item.id ? 'active' : ''} aria-current={screen === item.id ? 'page' : undefined} onClick={() => navigate(item.id)}>{item.icon}<span>{item.title}</span></button>)}</nav> : null}</main>{toast ? <div className="toast" role="status"><span>{toast}</span><button className="icon-button" aria-label="Dismiss notification" onClick={() => setToast('')}><X size={17} /></button></div> : null}</div>;
 }

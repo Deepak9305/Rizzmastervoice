@@ -45,7 +45,7 @@ export function createHandler(overrides = {}) {
     try {
       assert(allowed, 403, 'This app origin is not allowed.');
       if (request.method === 'OPTIONS') result = new Response(null, { status: 204 });
-      else if (path === 'health' && request.method === 'GET') result = json({ ok: true, configured: Boolean(config.supabaseUrl && config.supabaseKey && (config.openaiKey || config.geminiKey)) });
+      else if (path === 'health' && request.method === 'GET') result = json({ ok: true, configured: Boolean(config.supabaseUrl && config.supabaseKey && (config.openaiKey || config.geminiKey)), live_available: Boolean(config.geminiKey) });
       else if (path === 'billing/notifications' && request.method === 'POST') {
         await services.verifyPush(config, request.headers.get('authorization')?.replace(/^Bearer /i, '') || '');
         const body = await bodyJson(request);
@@ -64,6 +64,19 @@ export function createHandler(overrides = {}) {
           }
         }
         result = json({ ok: true });
+      } else if (config.geminiOnlyMode && ['live-token', 'live-turn'].includes(path) && request.method === 'POST') {
+        assert(config.geminiKey, 503, 'Your live coach is being set up. Please try again later.');
+        const body = await bodyJson(request);
+        const coach = body.coach || 'wingman';
+        assert(COACH_IDS.includes(coach), 400, 'Unknown coach.');
+        assert(['advice', 'practice'].includes(body.mode), 400, 'Unknown session type.');
+        const scenarios = { intro: 'Introduce yourself at a coffee shop.', second: 'Ask for a second date.', boundary: 'Set a boundary about texting.', rejection: 'Respond respectfully to rejection.' };
+        assert(body.mode !== 'practice' || scenarios[body.scenario], 400, 'Choose a practice scenario.');
+        if (path === 'live-token') {
+          result = json({ token: await services.createGeminiLiveToken(config, coachInstructions(coach, body.mode, scenarios[body.scenario])), model: config.geminiLiveModel, used: 0, limit: 5 });
+        } else {
+          result = json({ used: 0, limit: 5 });
+        }
       } else {
         const db = services.database(config);
         const { user, token } = await authenticated(request, db);

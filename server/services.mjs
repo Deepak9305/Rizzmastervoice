@@ -3,11 +3,13 @@ import { GoogleAuth, OAuth2Client } from 'google-auth-library';
 import { HttpError, accountHash, subscriptionAccess } from './policy.mjs';
 export function configuration(env = process.env) {
   const liveModel = String(env.GEMINI_LIVE_MODEL || 'gemini-3.8-live').trim().replace(/^models\//, '');
+  const geminiOnlyMode = env.GEMINI_ONLY_MODE === 'true' || (!env.SUPABASE_URL && !env.SUPABASE_SECRET_KEY && Boolean(env.GEMINI_API_KEY));
   return {
     supabaseUrl: env.SUPABASE_URL, supabaseKey: env.SUPABASE_SECRET_KEY,
     openaiKey: env.OPENAI_API_KEY,
     geminiKey: env.GEMINI_API_KEY,
     geminiLiveModel: liveModel || 'gemini-3.8-live',
+    geminiOnlyMode,
     coachModel: env.OPENAI_COACH_MODEL || 'gpt-4o-mini',
     transcribeModel: env.OPENAI_TRANSCRIBE_MODEL || 'gpt-4o-mini-transcribe',
     speechModel: env.OPENAI_SPEECH_MODEL || 'gpt-4o-mini-tts',
