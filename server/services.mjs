@@ -5,6 +5,8 @@ export function configuration(env = process.env) {
   return {
     supabaseUrl: env.SUPABASE_URL, supabaseKey: env.SUPABASE_SECRET_KEY,
     openaiKey: env.OPENAI_API_KEY,
+    geminiKey: env.GEMINI_API_KEY,
+    geminiLiveModel: env.GEMINI_LIVE_MODEL || 'gemini-3.8-live',
     coachModel: env.OPENAI_COACH_MODEL || 'gpt-4o-mini',
     transcribeModel: env.OPENAI_TRANSCRIBE_MODEL || 'gpt-4o-mini-transcribe',
     speechModel: env.OPENAI_SPEECH_MODEL || 'gpt-4o-mini-tts',
@@ -34,6 +36,32 @@ export async function moderate(config, text) {
   const result = await response.json();
   if (!result.results?.[0] || typeof result.results[0].flagged !== 'boolean') throw new HttpError(502, 'We couldn’t safely process this request. Please try again.');
   return result.results[0].flagged;
+}
+export async function createGeminiLiveToken(config, systemInstruction) {
+  if (!config.geminiKey) throw new HttpError(503, 'Your live coach is being set up. Please try again later.');
+  const now = Date.now();
+  const response = await fetch('https://generativelanguage.googleapis.com/v1beta/auth_tokens', {
+    method: 'POST',
+    headers: { 'x-goog-api-key': config.geminiKey, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      uses: 1,
+      expireTime: new Date(now + 30 * 60_000).toISOString(),
+      newSessionExpireTime: new Date(now + 60_000).toISOString(),
+      liveConnectConstraints: {
+        model: `models/${config.geminiLiveModel}`,
+        config: {
+          responseModalities: ['AUDIO'],
+          sessionResumption: {},
+          ...(systemInstruction ? { systemInstruction: { parts: [{ text: systemInstruction }] } } : {}),
+        },
+      },
+    }),
+    signal: AbortSignal.timeout(10000),
+  });
+  if (!response.ok) throw new HttpError(response.status === 429 ? 503 : 502, 'Your live coach is unavailable right now. Please try again.');
+  const data = await response.json().catch(() => ({}));
+  if (typeof data.name !== 'string' || !data.name) throw new HttpError(502, 'Your live coach could not start. Please try again.');
+  return data.name;
 }
 async function playClient(config) {
   if (!config.playCredentials) throw new HttpError(503, 'Google Play verification is being set up.');

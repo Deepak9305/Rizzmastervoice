@@ -1,6 +1,6 @@
 # Verification evidence
 
-Story: an adult signs in, consents to voice processing, records or types a message, receives an AI coaching response, optionally saves it, and purchases verified Plus access through Google Play.
+Story: an adult signs in, consents to voice processing, streams or types a message through Gemini Live, receives an AI coaching response, optionally saves it, and purchases verified Plus access through Google Play.
 
 | Boundary | Evidence | Status |
 | --- | --- | --- |
@@ -15,7 +15,7 @@ Story: an adult signs in, consents to voice processing, records or types a messa
 | Production dependency audit | `npm audit --omit=dev`: zero vulnerabilities | Passed |
 | Android package | Gradle `assembleDebug` with SDK 36/JDK 21; native Play Billing dependency 9.0.0 | Passed compilation |
 | Release configuration | `npm run check:release` names missing values without printing secrets | Correctly blocked until environments are added |
-| Live full story | Supabase, OpenAI, Google Play, SMTP, Vercel, physical device | Pending user configuration |
+| Live full story | Supabase, Gemini Live, Google Play, SMTP, Vercel, physical device | Pending user configuration |
 
 Automated result: **22 tests passed, zero failed**. Tests use no real accounts, audio, payments or provider secrets. No cloud project was deployed or altered.
 

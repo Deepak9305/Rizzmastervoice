@@ -12,6 +12,7 @@ import { api, ApiError, configured, defaultProfile, downloadJson, supabase } fro
 import { clearBillingAccount, initializeBilling, restorePurchases, setBillingCallbacks, subscribe } from './lib/billing';
 import { previewReply } from './lib/preview';
 import { VoiceRecorder, type Recording } from './lib/recorder';
+import { GeminiLiveSession, liveCoachInstruction } from './lib/live';
 import { SCENARIOS, type Coach, type Entitlement, type Message, type Mode, type Plan, type Profile, type SavedSession } from './types';
 const INITIAL_ACCESS: Entitlement = { active: false, plan: null, expires_at: null, state: 'FREE', used: 0, limit: 5 };
 const AUTH_SCREENS = ['welcome', 'age', 'login', 'signup', 'forgot', 'reset-password'];
@@ -44,6 +45,7 @@ export function App() {
   const [voiceMode, setVoiceMode] = useState(false);
   const [recording, setRecording] = useState(false);
   const [speaking, setSpeaking] = useState(false);
+  const [liveBusy, setLiveBusy] = useState(false);
   const [muted, setMuted] = useState(false);
   const [speechMessageId, setSpeechMessageId] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
@@ -61,19 +63,60 @@ export function App() {
   const legalReturn = useRef('welcome');
   const deletionReturn = useRef(screen === 'delete-account');
   const profileRef = useRef(profile); profileRef.current = profile;
+  const messagesRef = useRef(messages); messagesRef.current = messages;
+  const liveReply = useRef<{ userId: string; assistantId: string; input: string; output: string }>({ userId: '', assistantId: '', input: '', output: '' });
+  const liveReady = useRef(false);
+  const liveRecordingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const saveSessionRef = useRef<(items: Message[], silent?: boolean) => Promise<void>>();
   const startVoiceWhenReady = useRef(false);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const notify = useCallback((message: string) => {
     setToast(message); if (toastTimer.current) clearTimeout(toastTimer.current);
     toastTimer.current = setTimeout(() => setToast(''), 6500);
   }, []);
-  const stopAudio = useCallback(() => { audio.current?.pause(); setSpeaking(false); }, []);
+  const live = useRef<GeminiLiveSession | null>(null);
+  if (!live.current) live.current = new GeminiLiveSession({
+    onState: state => {
+      if (state === 'recording') { setRecording(true); setLiveBusy(true); }
+      if (state === 'speaking') setSpeaking(true);
+      if (state === 'connected') { setRecording(false); setSpeaking(false); }
+      if (state === 'closed') { setRecording(false); setSpeaking(false); setLiveBusy(false); liveReady.current = false; }
+    },
+    onInputTranscript: text => {
+      const current = liveReply.current;
+      current.input += text;
+      if (!current.userId) current.userId = crypto.randomUUID();
+      setMessages(items => {
+        const existing = items.some(item => item.id === current.userId);
+        return existing ? items.map(item => item.id === current.userId ? { ...item, content: current.input } : item) : [...items, { id: current.userId, role: 'user', content: current.input }];
+      });
+    },
+    onOutputTranscript: text => {
+      const current = liveReply.current;
+      current.output += text;
+      if (!current.assistantId) current.assistantId = crypto.randomUUID();
+      setSpeechMessageId(current.assistantId);
+      setMessages(items => {
+        const existing = items.some(item => item.id === current.assistantId);
+        return existing ? items.map(item => item.id === current.assistantId ? { ...item, content: current.output } : item) : [...items, { id: current.assistantId, role: 'assistant', content: current.output }];
+      });
+    },
+    onTurnComplete: () => {
+      const current = liveReply.current;
+      setLiveBusy(false); setRecording(false);
+      const items = messagesRef.current;
+      if (profileRef.current.save_transcripts && items.length > 1) void saveSessionRef.current?.(items, true);
+      liveReply.current = { userId: '', assistantId: '', input: '', output: '' };
+    },
+    onError: error => { setLiveBusy(false); setRecording(false); notify(error.message); },
+  });
+  const stopAudio = useCallback(() => { audio.current?.pause(); live.current?.stopPlayback(); setSpeaking(false); }, []);
   function clearSpeech() { stopAudio(); audio.current = null; if (audioUrl.current) URL.revokeObjectURL(audioUrl.current); audioUrl.current = null; }
   function navigate(next: string) {
     if (!ALL_SCREENS.includes(next)) return;
     if (next === 'privacy' || next === 'terms') legalReturn.current = screenRef.current;
     if (next === 'premium' || next === 'choose-coach') previousScreen.current = screenRef.current;
-    if (next !== 'conversation') { startVoiceWhenReady.current = false; recorder.current.cancel(); setRecording(false); stopAudio(); }
+    if (next !== 'conversation') { startVoiceWhenReady.current = false; recorder.current.cancel(); live.current?.close(); if (liveRecordingTimer.current) clearTimeout(liveRecordingTimer.current); setRecording(false); setLiveBusy(false); stopAudio(); }
     setScreen(next); history.pushState({}, '', next === 'welcome' ? '/' : `/${next}`);
     window.scrollTo({ top: 0 });
   }
@@ -87,9 +130,9 @@ export function App() {
   useEffect(() => {
     const pop = () => { recorder.current.cancel(); setRecording(false); stopAudio(); setScreen(screenFromUrl()); };
     const connect = () => setOnline(navigator.onLine);
-    const visibility = () => { if (document.hidden) { recorder.current.cancel(); setRecording(false); stopAudio(); } };
+    const visibility = () => { if (document.hidden) { recorder.current.cancel(); live.current?.close(); setRecording(false); setLiveBusy(false); stopAudio(); } };
     addEventListener('popstate', pop); addEventListener('online', connect); addEventListener('offline', connect); document.addEventListener('visibilitychange', visibility);
-    return () => { removeEventListener('popstate', pop); removeEventListener('online', connect); removeEventListener('offline', connect); document.removeEventListener('visibilitychange', visibility); if (toastTimer.current) clearTimeout(toastTimer.current); recorder.current.cancel(); if (audioUrl.current) URL.revokeObjectURL(audioUrl.current); };
+    return () => { removeEventListener('popstate', pop); removeEventListener('online', connect); removeEventListener('offline', connect); document.removeEventListener('visibilitychange', visibility); if (toastTimer.current) clearTimeout(toastTimer.current); if (liveRecordingTimer.current) clearTimeout(liveRecordingTimer.current); recorder.current.cancel(); live.current?.close(); if (audioUrl.current) URL.revokeObjectURL(audioUrl.current); };
   }, [stopAudio]);
   useEffect(() => {
     if (!Capacitor.isNativePlatform()) return;
@@ -97,7 +140,7 @@ export function App() {
       if (MAIN_SCREENS.includes(screenRef.current) || screenRef.current === 'welcome') { if (screenRef.current !== 'home' && screenRef.current !== 'welcome') navigateRef.current('home'); else void NativeApp.minimizeApp(); }
       else history.back();
     });
-    const state = NativeApp.addListener('appStateChange', ({ isActive }) => { if (!isActive) { recorder.current.cancel(); setRecording(false); stopAudio(); } });
+    const state = NativeApp.addListener('appStateChange', ({ isActive }) => { if (!isActive) { recorder.current.cancel(); live.current?.close(); setRecording(false); setLiveBusy(false); stopAudio(); } });
     return () => { void back.then(handle => handle.remove()); void state.then(handle => handle.remove()); };
   }, [stopAudio]);
   useEffect(() => {
@@ -165,6 +208,7 @@ export function App() {
     }
     if (!silent) notify(preview ? 'Sample session saved on this device.' : 'Session saved to your account.');
   }
+  saveSessionRef.current = saveSession;
   function playSpeech(base64: string, messageId: string) {
     stopAudio(); if (audioUrl.current) URL.revokeObjectURL(audioUrl.current);
     setSpeechMessageId(messageId);
@@ -173,9 +217,32 @@ export function App() {
     audio.current = new Audio(audioUrl.current); audio.current.onended = () => setSpeaking(false); audio.current.onerror = () => { setSpeaking(false); notify('Voice playback wasn’t available. Open captions to read the reply.'); };
     if (!muted) void audio.current.play().then(() => setSpeaking(true)).catch(() => { setSpeaking(false); notify('Tap Replay voice to hear your coach.'); });
   }
+  async function ensureLiveSession(voice = false) {
+    if (preview || liveReady.current) return;
+    const result = await api<{ token: string; model: string }>('live-token', { coach: sessionCoach, mode, voice });
+    await live.current?.connect(result.token, result.model, liveCoachInstruction(sessionCoach, mode, scenario));
+    liveReady.current = true;
+  }
+  async function reserveLiveTurn(voice = false) {
+    const result = await api<{ used: number; limit: number }>('live-turn', { coach: sessionCoach, mode, scenario, voice });
+    setAccess(current => ({ ...current, used: result.used, limit: result.limit }));
+  }
+  async function sendLiveText(text: string) {
+    if (liveBusy || !text.trim()) return;
+    const userId = crypto.randomUUID();
+    liveReply.current = { userId, assistantId: '', input: text.trim(), output: '' };
+    setMessages(items => [...items, { id: userId, role: 'user', content: text.trim() }]);
+    setSaved(false); setLiveBusy(true); stopAudio();
+    try { await reserveLiveTurn(false); await ensureLiveSession(false); live.current?.sendText(text.trim()); }
+    catch (error) { live.current?.close(); setLiveBusy(false); notify(error instanceof Error ? error.message : 'The live coach could not start. Please try again.'); }
+  }
   async function send(text?: string, captured?: Recording) {
     if (inFlight.current || (!text && !captured)) return;
     if (messages.length >= 98) { notify('Save this session and start a new conversation to keep coaching.'); return; }
+    if (!preview) {
+      if (captured) { notify('Live coaching uses the microphone directly. Tap the mic to speak again.'); return; }
+      if (text) { await sendLiveText(text); return; }
+    }
     const generation = sessionGeneration.current;
     const history = text ? [...messages, { id: crypto.randomUUID(), role: 'user' as const, content: text }] : messages;
     stopAudio(); setSaved(false); if (text) setMessages(history);
@@ -206,22 +273,36 @@ export function App() {
   }
   const sendRef = useRef(send); sendRef.current = send;
   async function beginRecording() {
-    if (busy) return;
+    if (busy || liveBusy) return;
     if (!profileRef.current.voice_consent) { navigate('consent'); return; }
     stopAudio();
+    if (!preview) {
+      setLiveBusy(true);
+      try {
+        await reserveLiveTurn(true);
+        await ensureLiveSession(true);
+        await live.current?.startMicrophone();
+        if (liveRecordingTimer.current) clearTimeout(liveRecordingTimer.current);
+        liveRecordingTimer.current = setTimeout(() => live.current?.stopMicrophone(), 45_000);
+      } catch (error) {
+        live.current?.close(); setLiveBusy(false); setRecording(false);
+        notify(error instanceof Error && error.name === 'NotAllowedError' ? 'Microphone access was denied. Enable it in settings or use text.' : error instanceof Error ? error.message : 'Microphone unavailable.');
+      }
+      return;
+    }
     try {
       const started = await recorder.current.start(captured => { setRecording(false); if (document.hidden || screenRef.current !== 'conversation') return; void sendRef.current(undefined, captured); }, error => { setRecording(false); notify(error.message); });
       if (started) setRecording(true);
     } catch (error) { notify(error instanceof Error && error.name === 'NotAllowedError' ? 'Microphone access was denied. Enable it in settings or use text.' : error instanceof Error ? error.message : 'Microphone unavailable.'); }
   }
-  function toggleVoice() { recorder.current.cancel(); setRecording(false); if (!voiceMode && !profile.voice_consent) { setVoiceMode(true); navigate('consent'); } else setVoiceMode(!voiceMode); }
+  function toggleVoice() { recorder.current.cancel(); live.current?.stopMicrophone(); setRecording(false); if (!voiceMode && !profile.voice_consent) { setVoiceMode(true); navigate('consent'); } else setVoiceMode(!voiceMode); }
   useEffect(() => {
     if (startVoiceWhenReady.current && screen === 'conversation' && profile.voice_consent && !busy) {
       startVoiceWhenReady.current = false;
       if (!document.hidden) void beginRecording();
     }
   }, [screen, profile.voice_consent, busy]);
-  function finishSession() { recorder.current.cancel(); setRecording(false); stopAudio(); navigate('recap'); }
+  function finishSession() { recorder.current.cancel(); live.current?.close(); if (liveRecordingTimer.current) clearTimeout(liveRecordingTimer.current); setRecording(false); setLiveBusy(false); stopAudio(); navigate('recap'); }
   function loadSessions() { void task(async () => { if (preview) setSessions(readPreviewSessions()); else { const result = await api<{ sessions: SavedSession[] }>('sessions'); setSessions(result.sessions); } }); }
 function openSession(item: SavedSession) { clearSpeech(); setSpeechMessageId(null); sessionGeneration.current++; sessionId.current = item.id; setTitle(item.title); setMode(item.mode); setScenario(item.scenario || 'intro'); setSessionCoach(item.coach); setMessages(item.messages.map(message => ({ ...message, id: message.id || crypto.randomUUID() }))); setSaved(true); setVoiceMode(false); navigate('conversation'); }
   function removeSession(id?: string) { void task(async () => { if (preview) { const remaining = id ? readPreviewSessions().filter(item => item.id !== id) : []; localStorage.setItem('rv.preview.sessions.v1', JSON.stringify(remaining)); setSessions(remaining); } else { await api('sessions', id ? { id } : {}, 'DELETE'); setSessions(items => id ? items.filter(item => item.id !== id) : []); } notify('Saved sessions deleted.'); }); }
@@ -229,8 +310,8 @@ function openSession(item: SavedSession) { clearSpeech(); setSpeechMessageId(nul
   function report(reason: string, note: string) { void task(async () => { if (preview) { notify('Preview: report form tested. No report was sent.'); navigate('conversation'); return; } await api('reports', { reason, note, message_id: reportMessage?.id, content: reportMessage?.content }); notify('Your report was sent for review. Thank you.'); navigate('conversation'); }); }
   function restore() { void task(async () => { if (preview || !user) { notify('Sign in to your account in the Android app to restore purchases.'); return; } await restorePurchases(user.id); notify('Your purchases were checked with Google Play.'); }); }
   function buy(plan: Plan) { void task(async () => { if (!user || preview) { navigate('login'); return; } await subscribe(plan, user.id); }); }
-  function signOut() { void task(async () => { sessionGeneration.current++; clearSpeech(); recorder.current.cancel(); if (!preview && supabase) { const result = await supabase.auth.signOut(); if (result.error) throw result.error; } setUser(null); setPreview(!configured); setProfile({ ...defaultProfile }); setMessages([]); setSessions([]); setAccess(INITIAL_ACCESS); navigate('welcome'); }); }
-  async function deleteAccount(password: string) { await task(async () => { clearSpeech(); if (preview) localStorage.removeItem('rv.preview.sessions.v1'); else { await api('account', { confirmation: 'DELETE', password }, 'DELETE'); await supabase?.auth.signOut({ scope: 'local' }); } sessionGeneration.current++; setUser(null); setProfile({ ...defaultProfile }); setSessions([]); setMessages([]); setAccess(INITIAL_ACCESS); setPreview(!configured); deletionReturn.current = false; navigate('welcome'); notify(preview ? 'Preview data cleared.' : 'Your account and app data have been deleted.'); }); }
+  function signOut() { void task(async () => { sessionGeneration.current++; clearSpeech(); recorder.current.cancel(); live.current?.close(); setLiveBusy(false); if (!preview && supabase) { const result = await supabase.auth.signOut(); if (result.error) throw result.error; } setUser(null); setPreview(!configured); setProfile({ ...defaultProfile }); setMessages([]); setSessions([]); setAccess(INITIAL_ACCESS); navigate('welcome'); }); }
+  async function deleteAccount(password: string) { await task(async () => { clearSpeech(); live.current?.close(); setLiveBusy(false); if (preview) localStorage.removeItem('rv.preview.sessions.v1'); else { await api('account', { confirmation: 'DELETE', password }, 'DELETE'); await supabase?.auth.signOut({ scope: 'local' }); } sessionGeneration.current++; setUser(null); setProfile({ ...defaultProfile }); setSessions([]); setMessages([]); setAccess(INITIAL_ACCESS); setPreview(!configured); deletionReturn.current = false; navigate('welcome'); notify(preview ? 'Preview data cleared.' : 'Your account and app data have been deleted.'); }); }
   const main = MAIN_SCREENS.includes(screen);
   const appAccess = user || preview;
   let content;
@@ -246,7 +327,7 @@ function openSession(item: SavedSession) { clearSpeech(); setSpeechMessageId(nul
   else if (screen === 'choose-coach') content = <ChooseCoachScreen coach={profile.coach} active={access.active || preview} back={() => navigate('home')} onChoose={coach => { if (coach !== 'wingman' && !access.active && !preview) navigate('premium'); else void task(async () => { await patchProfile({ coach }); }); }} onDone={() => navigate(previousScreen.current === 'profile' ? 'profile' : 'home')} />;
   else if (screen === 'practice') content = <PracticeScreen active={access.active || preview} start={startConversation} navigate={navigate} />;
   else if (screen === 'consent' || screen === 'voice-settings') content = <ConsentScreen busy={busy} back={() => navigate(screen === 'voice-settings' ? 'account' : 'home')} onAllow={() => void task(async () => { await patchProfile({ voice_consent: true }); if (screen === 'voice-settings') navigate('account'); else { startVoiceWhenReady.current = true; navigate('conversation'); } })} onText={() => { setVoiceMode(false); navigate(screen === 'voice-settings' ? 'account' : 'conversation'); }} />;
-else if (screen === 'conversation') content = <ConversationScreen title={title} coach={sessionCoach} mode={mode} messages={messages} busy={busy} recording={recording} speaking={speaking} voiceMode={voiceMode} muted={muted} preview={preview} speechMessageId={speechMessageId} saved={profile.save_transcripts} onSend={text => void send(text)} onRecord={() => void beginRecording()} onStopRecording={() => recorder.current.stop()} onCancelRecording={() => { recorder.current.cancel(); setRecording(false); }} onToggleVoice={toggleVoice} onToggleMute={() => { setMuted(!muted); stopAudio(); }} onEnd={finishSession} onReport={message => { setReportMessage(message); navigate('report'); }} onReplay={() => { if (audio.current) { audio.current.currentTime = 0; void audio.current.play().then(() => setSpeaking(true)).catch(() => notify('Voice playback is unavailable.')); } else notify('Voice playback is unavailable. Open captions to read this reply.'); }} />;
+else if (screen === 'conversation') content = <ConversationScreen title={title} coach={sessionCoach} mode={mode} messages={messages} busy={busy || liveBusy} recording={recording} speaking={speaking} voiceMode={voiceMode} muted={muted} preview={preview} liveVoice={!preview} speechMessageId={speechMessageId} saved={profile.save_transcripts} onSend={text => void send(text)} onRecord={() => void beginRecording()} onStopRecording={() => preview ? recorder.current.stop() : live.current?.stopMicrophone()} onCancelRecording={() => { recorder.current.cancel(); live.current?.close(); setLiveBusy(false); setRecording(false); }} onToggleVoice={toggleVoice} onToggleMute={() => { setMuted(!muted); live.current?.setMuted(!muted); stopAudio(); }} onEnd={finishSession} onReport={message => { setReportMessage(message); navigate('report'); }} onReplay={() => { if (audio.current) { audio.current.currentTime = 0; void audio.current.play().then(() => setSpeaking(true)).catch(() => notify('Voice playback is unavailable.')); } else notify('Live replies play as they arrive. Open captions to read this reply.'); }} />;
   else if (screen === 'recap') content = <RecapScreen messages={messages} saved={saved} busy={busy} save={() => void task(() => saveSession())} back={() => navigate('conversation')} home={() => navigate('home')} />;
   else if (screen === 'sessions') content = <SessionsScreen sessions={sessions} busy={busy} load={loadSessions} open={openSession} remove={removeSession} start={() => startConversation('Let’s talk')} />;
   else if (screen === 'profile') content = <ProfileScreen profile={profile} access={access} preview={preview} email={user?.email} patch={patch} navigate={navigate} signOut={signOut} />;

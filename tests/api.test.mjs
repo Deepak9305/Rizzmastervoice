@@ -30,11 +30,12 @@ function fixture(options = {}) {
   };
   let moderationCount = 0;
   const handler = createHandler({
-    configuration: () => ({ origins: ['https://localhost'], openaiKey: 'test-only', publicUrl: 'https://app.example.invalid' }),
+    configuration: () => ({ origins: ['https://localhost'], openaiKey: 'test-only', geminiKey: options.gemini ? 'test-only' : undefined, geminiLiveModel: 'gemini-3.8-live', publicUrl: 'https://app.example.invalid' }),
     database: () => db,
     entitlement: async () => ({ active: options.premium || false }),
     moderate: async () => { calls.push('moderate'); moderationCount++; if (options.moderationError) throw new HttpError(502, 'Moderation unavailable'); return options.blockInput ? true : options.blockOutput && moderationCount === 2; },
     openai: async (_config, path) => { calls.push(path); return Response.json({ choices: [{ message: { content: 'Respect boundaries and be yourself.' } }] }); },
+    createGeminiLiveToken: async (_config, instruction) => { calls.push(['gemini-token', instruction]); return 'token-name'; },
   });
   const request = (path, body, headers = {}) => handler(new Request(`https://app.example.invalid/api/${path}`, { method: body ? 'POST' : 'GET', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json', ...headers }, ...(body ? { body: JSON.stringify(body) } : {}) }));
   return { request, calls };
@@ -69,6 +70,16 @@ test('input/output moderation and outages fail safely', async () => {
 test('healthy coaching checks quota before moderation then model and output check', async () => {
   const f = fixture(); assert.equal((await f.request('coach', advice)).status, 200);
   assert.deepEqual(f.calls, ['voice_session_active', 'voice_reserve_turn', 'moderate', 'chat/completions', 'moderate']);
+});
+test('live sessions use a constrained token and reserve each turn', async () => {
+  const f = fixture({ gemini: true });
+  const tokenResponse = await f.request('live-token', { coach: 'wingman', mode: 'advice', voice: false });
+  assert.equal(tokenResponse.status, 200);
+  assert.equal((await tokenResponse.json()).token, 'token-name');
+  assert.equal(f.calls.find(call => Array.isArray(call))?.[0], 'gemini-token');
+  const turnResponse = await f.request('live-turn', { coach: 'wingman', mode: 'advice', voice: true });
+  assert.equal(turnResponse.status, 200);
+  assert.ok(f.calls.includes('voice_reserve_turn'));
 });
 const saved = { id: sessionId, title: 'Example', mode: 'advice', coach: 'wingman', messages: [...advice.messages, { role: 'assistant', content: 'Hello' }] };
 test('session save rejects another owner and primary-key races never overwrite', async () => {

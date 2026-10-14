@@ -17,16 +17,16 @@ Open http://127.0.0.1:5173. Without environment keys the app shows a clearly lab
 
 - Responsive React/TypeScript frontend and Capacitor Android project, package `com.rizzmaster.voice`.
 - Email/password Supabase authentication, email confirmation, password recovery, adult onboarding and explicit microphone consent.
-- Record-and-reply voice coaching (up to 45 seconds), transcription, spoken AI replies, keyboard mode, mute and replay. This is turn-based voice coaching, not a continuous live call.
+- Gemini Live voice coaching with streamed microphone input and generated audio replies, plus keyboard mode, captions, mute and transcript saving. Each spoken turn is quota-controlled before the Live API receives it.
 - Three coach styles, four fictional practice scenarios, optional transcript saving, search, recap, deletion and account export.
 - Weekly and monthly Google Play subscriptions using localized store prices, restore, server verification, acknowledgement, purchase/account binding, authenticated purchase notifications and cancellation links.
-- Free 5 turns/day; Plus 60/day. Atomic database quotas, server-enforced premium access, input/output moderation and response reporting.
+- Free 5 turns/day; Plus 60/day. Atomic database quotas, server-enforced premium access, adult/safety coaching instructions and response reporting.
 - Public privacy, terms and account-deletion pages, password-confirmed account deletion, cascading app-data deletion and revoked-session rejection.
 - Generated screen boards in `design/`, production assets in `public/`, Vercel API handlers in `server/`, and initial database setup in `supabase/setup.sql`.
 
 ## Add your environments later
 
-Follow [docs/SETUP.md](docs/SETUP.md), copy `.env.example` to `.env.local`, and fill the values. Client `VITE_*` values are embedded when building; server secrets stay on Vercel. Rebuild/sync Android after changing client values. Never place OpenAI, Google service account or Supabase secret keys in a `VITE_*` variable.
+Follow [docs/SETUP.md](docs/SETUP.md), copy `.env.example` to `.env.local`, and fill the values. Client `VITE_*` values are embedded when building; server secrets stay on Vercel. Rebuild/sync Android after changing client values. Never place Gemini, OpenAI, Google service account or Supabase secret keys in a `VITE_*` variable.
 
 ## Validate and build
 

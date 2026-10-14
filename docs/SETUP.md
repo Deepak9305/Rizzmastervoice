@@ -28,7 +28,9 @@ Fill server-only variables:
 | Variable | Value |
 | --- | --- |
 | `SUPABASE_URL`, `SUPABASE_SECRET_KEY` | Same project URL and private server key |
-| `OPENAI_API_KEY` | Private key for transcription, coaching, moderation and TTS |
+| `GEMINI_API_KEY` | Server-only Gemini API key used to mint constrained, short-lived Live API tokens |
+| `GEMINI_LIVE_MODEL` | `gemini-3.8-live` by default |
+| `OPENAI_API_KEY` | Optional legacy key for the turn-based `/api/coach` fallback; not needed for the Live voice path |
 | `OPENAI_COACH_MODEL` | Defaults to `gpt-4o-mini` |
 | `OPENAI_TRANSCRIBE_MODEL` | Defaults to `gpt-4o-mini-transcribe` |
 | `OPENAI_SPEECH_MODEL` | Defaults to `gpt-4o-mini-tts` |
@@ -44,7 +46,7 @@ For local API testing leave `VITE_API_BASE_URL` blank: Vite proxies `/api` to th
 
 ## 3. Vercel
 
-Import this directory as the Vercel project root. The included `vercel.json` builds Vite and runs `api/index.mjs` as a Node function. Add the public and server environment variables in the correct deployment environments. Set Node runtime to 22.x. Voice processing allows 180 seconds because transcription, moderation, coaching and speech happen sequentially; choose a deployment plan/settings that support that duration.
+Import this directory as the Vercel project root. The included `vercel.json` builds Vite and runs `api/index.mjs` as a Node function. Add the public and server environment variables in the correct deployment environments. Set Node runtime to 22.x. The short token request is handled by the Node function; the browser then connects directly to Gemini Live, so Vercel does not hold the audio session open.
 
 Redeploy after adding environment values. Check `/api/health` returns `configured: true`; this means required values exist, not that provider credentials have been validated. Visit `/privacy`, `/terms`, and `/delete-account` while signed out. Confirm all routes work on direct reload. Configure domain/HTTPS and avoid deployment protection on the public privacy/deletion URLs or public API.
 
